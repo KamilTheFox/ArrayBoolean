@@ -7,24 +7,25 @@ namespace ModiferTypes
     {
         private ArrayBoolean()
         {
-
         }
+
         public ArrayBoolean(bool[] array)
         {
-            ConvertArrayToBytes(array);
             Count = array.Length;
+            value = EncodeToBytes(array);
         }
-        public ArrayBoolean(byte[] bits)
+
+        public ArrayBoolean(byte[] encodedData)
         {
-            value = bits;
-            Count = bits.Length * 8;
+            var (count, bytesRead) = DecodeVLQ(encodedData, 0);
+            Count = count;
+            value = encodedData;
         }
 
         private const byte OFFSET_BIT = 128;
-
         private const byte SIZE_BYTE = 8;
 
-        private byte[] value;
+        private byte[] value; // Всегда содержит: [VLQ-длина][данные]
 
         public byte[] GetByte => value;
 
@@ -51,77 +52,147 @@ namespace ModiferTypes
             if (Count - 1 < index || 0 > index)
                 throw new ArgumentOutOfRangeException("index of class ArrayBoolean");
         }
-        
+
         private int GetIndexArrayValue(int index) => index / SIZE_BYTE;
 
         private int GetIndexBitValue(int index) => index % SIZE_BYTE;
 
-        private byte[] ConvertArrayToBytes(bool[] array)
+        private int GetDataOffset()
         {
-            value = new byte[GetIndexArrayValue(array.Length) + 1];
+            var (_, bytesRead) = DecodeVLQ(value, 0);
+            return bytesRead;
+        }
+
+        private byte[] EncodeToBytes(bool[] array)
+        {
+            byte[] countBytes = EncodeVLQ(array.Length);
+            int dataBytesLength = GetIndexArrayValue(array.Length) + 1;
+            byte[] result = new byte[countBytes.Length + dataBytesLength];
+
+            Array.Copy(countBytes, 0, result, 0, countBytes.Length);
+
+            int offset = countBytes.Length;
             for (int i = 0; i < array.Length; i++)
             {
                 if (array[i])
                 {
-                    InvertBitAt(i);
+                    int indexArray = GetIndexArrayValue(i);
+                    int indexBit = GetIndexBitValue(i);
+                    result[offset + indexArray] = InvertBit(result[offset + indexArray], indexBit);
                 }
             }
-            return value;
+
+            return result;
         }
 
         private void InvertBitAt(int index)
         {
+            int offset = GetDataOffset();
             int indexArray = GetIndexArrayValue(index);
             int indexBit = GetIndexBitValue(index);
-            value[indexArray] = InvertBit(value[indexArray], indexBit);
+            value[offset + indexArray] = InvertBit(value[offset + indexArray], indexBit);
         }
 
         private byte InvertBit(byte _byte, int indexBit)
         {
             return (byte)(_byte ^ (OFFSET_BIT >> indexBit));
         }
+
         private bool GetBoolAt(int index)
         {
+            int offset = GetDataOffset();
             int indexArray = GetIndexArrayValue(index);
             int indexBit = GetIndexBitValue(index);
-            return GetBoolAtBit(value[indexArray], indexBit);
+            return GetBoolAtBit(value[offset + indexArray], indexBit);
         }
+
         private bool GetBoolAtBit(byte _byte, int indexBit)
         {
             int mask = (OFFSET_BIT >> indexBit);
             return ((_byte & mask) == mask);
         }
-        private bool[] ConvertBytesToArray(byte[] bits)
+
+        private bool[] ConvertToArray()
         {
             bool[] array = new bool[Count];
-            for(int i = 0; i < Count; i++)
+            for (int i = 0; i < Count; i++)
             {
                 array[i] = GetBoolAt(i);
             }
             return array;
         }
 
+        private static byte[] EncodeVLQ(int count)
+        {
+            if (count == 0)
+                return new byte[] { 0 };
+
+            var bytes = new System.Collections.Generic.List<byte>();
+
+            while (count > 0)
+            {
+                byte b = (byte)(count & 0x7F);
+                count >>= 7;
+
+                if (count > 0)
+                    b |= 0x80;
+
+                bytes.Add(b);
+            }
+
+            return bytes.ToArray();
+        }
+
+        private static (int count, int bytesRead) DecodeVLQ(byte[] data, int startIndex = 0)
+        {
+            int result = 0;
+            int shift = 0;
+            int bytesRead = 0;
+
+            while (true)
+            {
+                if (startIndex + bytesRead >= data.Length)
+                    throw new ArgumentException("Invalid VLQ encoding");
+
+                byte b = data[startIndex + bytesRead];
+                bytesRead++;
+
+                result |= (b & 0x7F) << shift;
+
+                if ((b & 0x80) == 0)
+                    break;
+
+                shift += 7;
+            }
+
+            return (result, bytesRead);
+        }
+
         public IEnumerator GetEnumerator()
         {
-            return ConvertBytesToArray(value).GetEnumerator();
+            return ConvertToArray().GetEnumerator();
         }
 
         public object Clone()
         {
+            byte[] clonedValue = new byte[value.Length];
+            Array.Copy(value, clonedValue, value.Length);
+
             return new ArrayBoolean()
             {
-                value = this.value,
+                value = clonedValue,
                 Count = this.Count
             };
         }
 
         public bool Equals(ArrayBoolean other)
         {
-            if(value.Length != other.value.Length)
+            if (other == null || value.Length != other.value.Length)
                 return false;
-            for(int i = 0; i < value.Length; i++)
+
+            for (int i = 0; i < value.Length; i++)
             {
-                if(value[i] != other.value[i])
+                if (value[i] != other.value[i])
                     return false;
             }
             return true;
@@ -134,13 +205,12 @@ namespace ModiferTypes
 
         public static implicit operator bool[](ArrayBoolean array)
         {
-            return array.ConvertBytesToArray(array.value);
+            return array.ConvertToArray();
         }
 
         public static explicit operator ArrayBoolean(byte[] array)
         {
             return new ArrayBoolean(array);
         }
-
     }
 }
